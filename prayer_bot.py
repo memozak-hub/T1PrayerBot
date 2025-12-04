@@ -2,7 +2,8 @@ import logging
 import requests
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
-TELEGRAM_TOKEN = "8467819209:AAF1TD-Xa7ATjbq2X_NX60Och5tHqeokaeo"
+import os
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # تخزين المدينة لكل مستخدم
 user_locations = {}
@@ -113,3 +114,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
