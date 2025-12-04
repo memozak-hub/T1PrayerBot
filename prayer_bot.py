@@ -1,10 +1,9 @@
 import os
 import logging
-from datetime import datetime
+from typing import Optional, Dict, Tuple
 
 import requests
 from telegram import (
-    Bot,
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -14,534 +13,438 @@ from telegram.ext import (
     CallbackContext,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     Filters,
+    CallbackQueryHandler,
 )
 
-# ============ الإعدادات العامة ============
-
+# ---------------- إعداد اللوج ----------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-if not TELEGRAM_TOKEN:
-    raise RuntimeError(
-        "Environment variable TELEGRAM_TOKEN is missing. "
-        "Please set it in Render."
-    )
+# ---------------- المتغيرات من Environment ----------------
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+BASE_URL = os.environ.get("BASE_URL", "https://t1prayerbot.onrender.com").rstrip("/")
+PORT = int(os.environ.get("PORT", "10000"))  # Render يمرّر هذا تلقائيًا
 
-# عنوان الخدمة على Render (يفضل وضعه في متغير بيئة BASE_URL)
-DEFAULT_BASE_URL = "https://t1prayerbot.onrender.com"
+WEBHOOK_PATH = TELEGRAM_TOKEN
+WEBHOOK_URL = f"{BASE_URL}/{WEBHOOK_PATH}"  # مهم: بدون :PORT في الرابط
 
-# ============ بيانات الدول والمدن ============
+# ---------------- البيانات: الدول والمدن ----------------
+ARAB_COUNTRIES = [
+    "لبنان",
+    "سوريا",
+    "الأردن",
+    "فلسطين",
+    "مصر",
+    "السعودية",
+    "الإمارات",
+    "قطر",
+    "الكويت",
+    "البحرين",
+    "عُمان",
+    "العراق",
+    "اليمن",
+    "السودان",
+    "تونس",
+    "المغرب",
+    "الجزائر",
+]
 
-# مفتاح المعجم هو كود الدولة (اختيار داخلي لنا)
-COUNTRIES = {
-    "LB": {
-        "name_ar": "لبنان",
-        "api_country": "Lebanon",
-        "cities": {
-            "beirut": {"name_ar": "بيروت", "api_city": "Beirut"},
-            "tripoli": {"name_ar": "طرابلس", "api_city": "Tripoli"},
-            "saida": {"name_ar": "صيدا", "api_city": "Sidon"},
-        },
-    },
-    "SY": {
-        "name_ar": "سوريا",
-        "api_country": "Syria",
-        "cities": {
-            "damascus": {"name_ar": "دمشق", "api_city": "Damascus"},
-            "aleppo": {"name_ar": "حلب", "api_city": "Aleppo"},
-        },
-    },
-    "JO": {
-        "name_ar": "الأردن",
-        "api_country": "Jordan",
-        "cities": {
-            "amman": {"name_ar": "عمّان", "api_city": "Amman"},
-            "irbid": {"name_ar": "إربد", "api_city": "Irbid"},
-        },
-    },
-    "SA": {
-        "name_ar": "السعودية",
-        "api_country": "Saudi Arabia",
-        "cities": {
-            "riyadh": {"name_ar": "الرياض", "api_city": "Riyadh"},
-            "jeddah": {"name_ar": "جدّة", "api_city": "Jeddah"},
-            "makkah": {"name_ar": "مكة", "api_city": "Makkah"},
-            "madinah": {"name_ar": "المدينة المنوّرة", "api_city": "Medina"},
-        },
-    },
-    "QA": {
-        "name_ar": "قطر",
-        "api_country": "Qatar",
-        "cities": {
-            "doha": {"name_ar": "الدوحة", "api_city": "Doha"},
-        },
-    },
-    "AE": {
-        "name_ar": "الإمارات",
-        "api_country": "United Arab Emirates",
-        "cities": {
-            "dubai": {"name_ar": "دبي", "api_city": "Dubai"},
-            "abudhabi": {"name_ar": "أبوظبي", "api_city": "Abu Dhabi"},
-        },
-    },
-    "KW": {
-        "name_ar": "الكويت",
-        "api_country": "Kuwait",
-        "cities": {
-            "kuwaitcity": {"name_ar": "مدينة الكويت", "api_city": "Kuwait City"},
-        },
-    },
-    "BH": {
-        "name_ar": "البحرين",
-        "api_country": "Bahrain",
-        "cities": {
-            "manama": {"name_ar": "المنامة", "api_city": "Manama"},
-        },
-    },
-    "OM": {
-        "name_ar": "عُمان",
-        "api_country": "Oman",
-        "cities": {
-            "muscat": {"name_ar": "مسقط", "api_city": "Muscat"},
-        },
-    },
-    "YE": {
-        "name_ar": "اليمن",
-        "api_country": "Yemen",
-        "cities": {
-            "sanaa": {"name_ar": "صنعاء", "api_city": "Sanaa"},
-            "aden": {"name_ar": "عدن", "api_city": "Aden"},
-        },
-    },
-    "EG": {
-        "name_ar": "مصر",
-        "api_country": "Egypt",
-        "cities": {
-            "cairo": {"name_ar": "القاهرة", "api_city": "Cairo"},
-            "alexandria": {"name_ar": "الإسكندرية", "api_city": "Alexandria"},
-        },
-    },
-    "PS": {
-        "name_ar": "فلسطين",
-        "api_country": "Palestine",
-        "cities": {
-            "gaza": {"name_ar": "غزة", "api_city": "Gaza"},
-            "jerusalem": {"name_ar": "القدس", "api_city": "Jerusalem"},
-        },
-    },
-    "IQ": {
-        "name_ar": "العراق",
-        "api_country": "Iraq",
-        "cities": {
-            "baghdad": {"name_ar": "بغداد", "api_city": "Baghdad"},
-            "basra": {"name_ar": "البصرة", "api_city": "Basrah"},
-        },
-    },
-    "SD": {
-        "name_ar": "السودان",
-        "api_country": "Sudan",
-        "cities": {
-            "khartoum": {"name_ar": "الخرطوم", "api_city": "Khartoum"},
-        },
-    },
-    "MA": {
-        "name_ar": "المغرب",
-        "api_country": "Morocco",
-        "cities": {
-            "rabat": {"name_ar": "الرباط", "api_city": "Rabat"},
-            "casablanca": {"name_ar": "الدار البيضاء", "api_city": "Casablanca"},
-        },
-    },
-    "DZ": {
-        "name_ar": "الجزائر",
-        "api_country": "Algeria",
-        "cities": {
-            "algiers": {"name_ar": "الجزائر العاصمة", "api_city": "Algiers"},
-            "oran": {"name_ar": "وهران", "api_city": "Oran"},
-        },
-    },
-    "TN": {
-        "name_ar": "تونس",
-        "api_country": "Tunisia",
-        "cities": {
-            "tunis": {"name_ar": "تونس", "api_city": "Tunis"},
-        },
-    },
-    "LY": {
-        "name_ar": "ليبيا",
-        "api_country": "Libya",
-        "cities": {
-            "tripolily": {"name_ar": "طرابلس", "api_city": "Tripoli"},
-        },
-    },
+# مدن رئيسية لكل دولة (يمكنك إضافة/تعديل كما تحب)
+COUNTRY_CITIES = {
+    "لبنان": ["بيروت", "طرابلس", "صيدا", "صور", "غير ذلك"],
+    "سوريا": ["دمشق", "حلب", "حمص", "حماة", "غير ذلك"],
+    "الأردن": ["عمّان", "إربد", "الزرقاء", "العقبة", "غير ذلك"],
+    "فلسطين": ["القدس", "غزة", "الخليل", "نابلس", "غير ذلك"],
+    "مصر": ["القاهرة", "الإسكندرية", "الجيزة", "أسيوط", "غير ذلك"],
+    "السعودية": ["الرياض", "مكة", "المدينة", "جدة", "غير ذلك"],
+    "الإمارات": ["دبي", "أبوظبي", "الشارقة", "عجمان", "غير ذلك"],
+    "قطر": ["الدوحة", "الريان", "الوكرة", "الخوير", "غير ذلك"],
+    "الكويت": ["مدينة الكويت", "حولي", "الفروانية", "الجهراء", "غير ذلك"],
+    "البحرين": ["المنامة", "المحرق", "سترة", "عيسى", "غير ذلك"],
+    "عُمان": ["مسقط", "صلالة", "نزوى", "صحار", "غير ذلك"],
+    "العراق": ["بغداد", "البصرة", "أربيل", "الموصل", "غير ذلك"],
+    "اليمن": ["صنعاء", "عدن", "تعز", "الحديدة", "غير ذلك"],
+    "السودان": ["الخرطوم", "أم درمان", "بحري", "بور سودان", "غير ذلك"],
+    "تونس": ["تونس", "صفاقس", "سوسة", "بنزرت", "غير ذلك"],
+    "المغرب": ["الرباط", "الدار البيضاء", "فاس", "مراكش", "غير ذلك"],
+    "الجزائر": ["الجزائر", "وهران", "قسنطينة", "عنابة", "غير ذلك"],
 }
 
-# تخزين تفضيلات المستخدمين في الذاكرة (يُمسح عند إعادة التشغيل، لكنه يكفي الآن)
-USER_PREFS = {}  # user_id -> dict(country_code, city_key)
+# أسماء الدول الإنجليزية لـ API
+COUNTRY_API_NAMES = {
+    "لبنان": "Lebanon",
+    "سوريا": "Syria",
+    "الأردن": "Jordan",
+    "فلسطين": "Palestine",
+    "مصر": "Egypt",
+    "السعودية": "Saudi Arabia",
+    "الإمارات": "United Arab Emirates",
+    "قطر": "Qatar",
+    "الكويت": "Kuwait",
+    "البحرين": "Bahrain",
+    "عُمان": "Oman",
+    "العراق": "Iraq",
+    "اليمن": "Yemen",
+    "السودان": "Sudan",
+    "تونس": "Tunisia",
+    "المغرب": "Morocco",
+    "الجزائر": "Algeria",
+}
+
+# أسماء المدن الإنجليزية لبعض المدن المعروفة
+CITY_API_NAMES: Dict[Tuple[str, str], str] = {
+    ("لبنان", "بيروت"): "Beirut",
+    ("لبنان", "طرابلس"): "Tripoli",
+    ("لبنان", "صيدا"): "Sidon",
+    ("لبنان", "صور"): "Tyre",
+
+    ("سوريا", "دمشق"): "Damascus",
+    ("سوريا", "حلب"): "Aleppo",
+    ("سوريا", "حمص"): "Homs",
+    ("سوريا", "حماة"): "Hama",
+
+    ("الأردن", "عمّان"): "Amman",
+    ("الأردن", "عمان"): "Amman",
+    ("الأردن", "إربد"): "Irbid",
+    ("الأردن", "الزرقاء"): "Zarqa",
+    ("الأردن", "العقبة"): "Aqaba",
+
+    ("فلسطين", "القدس"): "Jerusalem",
+    ("فلسطين", "غزة"): "Gaza",
+    ("فلسطين", "الخليل"): "Hebron",
+    ("فلسطين", "نابلس"): "Nablus",
+
+    ("مصر", "القاهرة"): "Cairo",
+    ("مصر", "الإسكندرية"): "Alexandria",
+    ("مصر", "الاسكندرية"): "Alexandria",
+    ("مصر", "الجيزة"): "Giza",
+
+    ("السعودية", "الرياض"): "Riyadh",
+    ("السعودية", "مكة"): "Mecca",
+    ("السعودية", "المدينة"): "Medina",
+    ("السعودية", "جدة"): "Jeddah",
+
+    ("الإمارات", "دبي"): "Dubai",
+    ("الإمارات", "أبوظبي"): "Abu Dhabi",
+    ("الإمارات", "ابوظبي"): "Abu Dhabi",
+
+    ("قطر", "الدوحة"): "Doha",
+
+    ("الكويت", "مدينة الكويت"): "Kuwait City",
+
+    ("البحرين", "المنامة"): "Manama",
+
+    ("عُمان", "مسقط"): "Muscat",
+
+    ("العراق", "بغداد"): "Baghdad",
+    ("العراق", "البصرة"): "Basra",
+    ("العراق", "أربيل"): "Erbil",
+    ("العراق", "الموصل"): "Mosul",
+
+    ("اليمن", "صنعاء"): "Sanaa",
+    ("اليمن", "عدن"): "Aden",
+
+    ("السودان", "الخرطوم"): "Khartoum",
+
+    ("تونس", "تونس"): "Tunis",
+
+    ("المغرب", "الرباط"): "Rabat",
+    ("المغرب", "الدار البيضاء"): "Casablanca",
+    ("المغرب", "فاس"): "Fes",
+    ("المغرب", "مراكش"): "Marrakesh",
+
+    ("الجزائر", "الجزائر"): "Algiers",
+    ("الجزائر", "وهران"): "Oran",
+    ("الجزائر", "قسنطينة"): "Constantine",
+    ("الجزائر", "عنابة"): "Annaba",
+}
 
 
-# ============ دوال مساعدة ============
-
-def build_countries_keyboard():
-    """لوحة اختيار الدول بشكل مربعات جميلة."""
+# ---------------- دوال مساعدة لبناء الكيبورد ----------------
+def build_countries_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     row = []
-    for code, info in COUNTRIES.items():
-        row.append(
-            InlineKeyboardButton(
-                info["name_ar"], callback_data=f"country|{code}"
-            )
-        )
-        # كل صف فيه 3 أزرار
-        if len(row) == 3:
+    for i, country in enumerate(ARAB_COUNTRIES, start=1):
+        row.append(InlineKeyboardButton(country, callback_data=f"country|{country}"))
+        if i % 2 == 0:  # صفين صفين
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-
-    # زر "دولة / مدينة غير موجودة"
-    buttons.append(
-        [InlineKeyboardButton("🌍 دولة/مدينة غير موجودة", callback_data="manual_location")]
-    )
-
     return InlineKeyboardMarkup(buttons)
 
 
-def build_cities_keyboard(country_code: str):
-    """لوحة اختيار المدن داخل دولة معينة."""
-    country = COUNTRIES[country_code]
-    cities = country["cities"]
+def build_cities_keyboard(country: str) -> InlineKeyboardMarkup:
+    cities = COUNTRY_CITIES.get(country, [])
     buttons = []
     row = []
-    for key, info in cities.items():
+    for i, city in enumerate(cities, start=1):
         row.append(
             InlineKeyboardButton(
-                info["name_ar"], callback_data=f"city|{country_code}|{key}"
+                city,
+                callback_data=f"city|{country}|{city}"
             )
         )
-        if len(row) == 2:
+        if i % 2 == 0:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-
-    buttons.append(
-        [InlineKeyboardButton("🏙 مدينة غير موجودة", callback_data=f"manual_city|{country_code}")]
-    )
-
-    buttons.append(
-        [InlineKeyboardButton("⬅️ رجوع لاختيار دولة أخرى", callback_data="back_to_countries")]
-    )
-
     return InlineKeyboardMarkup(buttons)
 
 
-def fetch_prayer_times(city: str, country: str):
-    """جلب مواقيت الصلاة من API موقع AlAdhan."""
-    url = "https://api.aladhan.com/v1/timingsByCity"
-    params = {
-        "city": city,
-        "country": country,
-        "method": 2,  # أم القرى تقريباً
-        "school": 0,
-        "iso8601": True,
-    }
+# ---------------- دالة جلب مواقيت الصلاة من API ----------------
+def get_prayer_times(country_ar: str, city_ar: str) -> Optional[Dict]:
+    """يرجع dict فيه المواقيت أو None في حال الفشل."""
+    country_en = COUNTRY_API_NAMES.get(country_ar, country_ar)
+    city_en = CITY_API_NAMES.get((country_ar, city_ar), city_ar)
+
     try:
+        url = "http://api.aladhan.com/v1/timingsByCity"
+        params = {
+            "city": city_en,
+            "country": country_en,
+            "method": 2,   # جامعة العلوم الإسلامية بكراتشي
+            "school": 0,
+        }
         resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
         data = resp.json()
+
         if data.get("code") != 200:
+            logger.warning(f"API error: {data}")
             return None
+
         timings = data["data"]["timings"]
-        date_info = data["data"]["date"]["gregorian"]
-        readable_date = f"{date_info['day']}-{date_info['month']['number']}-{date_info['year']}"
-        return timings, readable_date
+        date_info = data["data"]["date"]
+        gregorian = date_info["readable"]
+        hijri = date_info["hijri"]["date"]
+
+        return {
+            "Fajr": timings.get("Fajr"),
+            "Dhuhr": timings.get("Dhuhr"),
+            "Asr": timings.get("Asr"),
+            "Maghrib": timings.get("Maghrib"),
+            "Isha": timings.get("Isha"),
+            "gregorian": gregorian,
+            "hijri": hijri,
+        }
     except Exception as e:
-        logger.error("Error fetching prayer times: %s", e)
+        logger.exception(f"Error fetching prayer times: {e}")
         return None
 
 
-def format_prayer_message(city_ar: str, country_ar: str, timings, date_str: str):
-    """تنسيق رسالة مواقيت الصلاة بشكل جميل."""
-    fajr = timings["Fajr"]
-    dhuhr = timings["Dhuhr"]
-    asr = timings["Asr"]
-    maghrib = timings["Maghrib"]
-    isha = timings["Isha"]
-
-    message = (
-        f"🕌 مواقيت الصلاة اليوم في {city_ar} - {country_ar}\n"
-        f"📅 التاريخ: {date_str}\n\n"
-        f"🌅 الفجر : {fajr}\n"
-        f"☀️ الظهر : {dhuhr}\n"
-        f"🌇 العصر : {asr}\n"
-        f"🌆 المغرب : {maghrib}\n"
-        f"🌙 العشاء : {isha}\n"
+def format_prayer_message(country_ar: str, city_ar: str, times: Dict) -> str:
+    return (
+        f"🕌 *مواقيت الصلاة اليوم*\n"
+        f"📍 *المدينة:* {city_ar}\n"
+        f"🌍 *الدولة:* {country_ar}\n\n"
+        f"📅 *التاريخ الميلادي:* {times['gregorian']}\n"
+        f"🗓 *التاريخ الهجري:* {times['hijri']}\n\n"
+        f"الفجر: {times['Fajr']}\n"
+        f"الظهر: {times['Dhuhr']}\n"
+        f"العصر: {times['Asr']}\n"
+        f"المغرب: {times['Maghrib']}\n"
+        f"العشاء: {times['Isha']}\n\n"
+        f"🤍 نسأل الله أن يتقبّل منّا ومنكم."
     )
-    return message
 
 
-# ============ Handlers ============
-
-def start(update: Update, context: CallbackContext):
-    """معالجة أمر /start أو أول رسالة."""
-    user = update.effective_user
+# ---------------- Handlers ----------------
+def send_country_menu(update: Update, context: CallbackContext):
     text = (
-        f"وعليكم السلام ورحمة الله وبركاته يا {user.first_name or 'أخي الكريم'} 🌹\n\n"
-        "أنا بوت مواقيت الصلاة.\n"
-        "اختر الدولة أولاً من الأزرار التالية:"
+        "وعليكم السلام ورحمة الله وبركاته 🤍\n\n"
+        "اختَر الدولة أولًا من القائمة التالية، ثم اختر مدينتك للحصول على مواقيت الصلاة."
     )
-    keyboard = build_countries_keyboard()
     if update.message:
-        update.message.reply_text(text, reply_markup=keyboard)
+        update.message.reply_text(
+            text,
+            reply_markup=build_countries_keyboard(),
+        )
     else:
-        # في حال نادى /start من زر
-        update.callback_query.message.reply_text(text, reply_markup=keyboard)
-
-
-def ask_for_country(update: Update, context: CallbackContext):
-    """إرسال لوحة الدول فقط."""
-    keyboard = build_countries_keyboard()
-    text = "اختر الدولة من الأزرار التالية:"
-    if update.message:
-        update.message.reply_text(text, reply_markup=keyboard)
-    else:
-        update.callback_query.message.reply_text(text, reply_markup=keyboard)
-
-
-def handle_text(update: Update, context: CallbackContext):
-    """أي رسالة نصية عادية من المستخدم."""
-    user_id = update.effective_user.id
-    text = (update.message.text or "").strip()
-
-    # لو كان ينتظر إدخال يدوي للدولة والمدينة
-    if context.user_data.get("awaiting_manual_location"):
-        handle_manual_location(update, context)
-        return
-
-    # تحيات / طلب تغيير مدينة
-    norm = text.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").lower()
-    if (
-        "سلام" in norm
-        or text == "/start"
-        or "hi" in norm
-        or "hello" in norm
-    ):
-        start(update, context)
-        return
-
-    if "تغيير" in norm and "مدين" in norm:
-        ask_for_country(update, context)
-        return
-
-    # إن كان له مدينة محفوظة، اعرض المواقيت مباشرة
-    prefs = USER_PREFS.get(user_id)
-    if prefs:
-        country_code = prefs["country_code"]
-        city_key = prefs["city_key"]
-        country = COUNTRIES.get(country_code)
-        if country:
-            city_info = country["cities"][city_key]
-            timings_data = fetch_prayer_times(
-                city_info["api_city"], country["api_country"]
-            )
-            if timings_data:
-                timings, date_str = timings_data
-                msg = format_prayer_message(
-                    city_info["name_ar"],
-                    country["name_ar"],
-                    timings,
-                    date_str,
-                )
-                update.message.reply_text(msg)
-                return
-
-    # لو لم يكن عنده مدينة محفوظة
-    update.message.reply_text(
-        "أهلاً بك 🌹\nاختر الدولة من الأزرار أو اكتب: تغيير المدينة",
-        reply_markup=build_countries_keyboard(),
-    )
-
-
-def handle_callback(update: Update, context: CallbackContext):
-    """معالجة ضغط الأزرار (InlineKeyboard)."""
-    query = update.callback_query
-    data = query.data
-    user_id = query.from_user.id
-
-    query.answer()
-
-    if data.startswith("country|"):
-        # اختيار دولة → نعرض المدن
-        country_code = data.split("|", 1)[1]
-        country = COUNTRIES.get(country_code)
-        if not country:
-            query.edit_message_text("حدث خطأ في اختيار الدولة، جرّب مرة أخرى.")
-            return
-
-        keyboard = build_cities_keyboard(country_code)
+        # لو نداء من كولباك
+        query = update.callback_query
+        query.answer()
         query.edit_message_text(
-            text=f"اختر المدينة داخل {country['name_ar']}:",
-            reply_markup=keyboard,
+            text,
+            reply_markup=build_countries_keyboard(),
         )
 
-    elif data.startswith("city|"):
-        # اختيار مدينة → جلب المواقيت وحفظ التفضيل
-        _, country_code, city_key = data.split("|")
-        country = COUNTRIES.get(country_code)
-        if not country:
-            query.edit_message_text("حدث خطأ في اختيار الدولة، جرّب مرة أخرى.")
-            return
-        city_info = country["cities"].get(city_key)
-        if not city_info:
-            query.edit_message_text("حدث خطأ في اختيار المدينة، جرّب مرة أخرى.")
-            return
 
-        timings_data = fetch_prayer_times(
-            city_info["api_city"], country["api_country"]
-        )
-        if not timings_data:
-            query.edit_message_text(
-                "تعذر الحصول على مواقيت الصلاة حالياً، حاول بعد قليل."
+def start_command(update: Update, context: CallbackContext):
+    send_country_menu(update, context)
+
+
+def text_handler(update: Update, context: CallbackContext):
+    text = (update.message.text or "").strip().lower()
+
+    # لو كان ينتظر اسم مدينة غير موجودة في القائمة
+    if context.user_data.get("awaiting_city_name"):
+        data = context.user_data["awaiting_city_name"]
+        country_ar = data["country"]
+        city_ar = update.message.text.strip()
+
+        times = get_prayer_times(country_ar, city_ar)
+        if not times:
+            update.message.reply_text(
+                "❌ لم أستطع العثور على مواقيت الصلاة لهذه المدينة.\n"
+                "حاول كتابة الاسم بالإنجليزية أو باسم مختلف، أو اختر مدينة من القائمة."
             )
             return
 
-        timings, date_str = timings_data
-        msg = format_prayer_message(
-            city_info["name_ar"], country["name_ar"], timings, date_str
+        # حفظ آخر مدينة للمستخدم
+        context.user_data["saved_country"] = country_ar
+        context.user_data["saved_city"] = city_ar
+        context.user_data["awaiting_city_name"] = None
+
+        msg = format_prayer_message(country_ar, city_ar, times)
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔁 مواقيت اليوم من جديد", callback_data="repeat_last")]]
         )
+        update.message.reply_markdown(msg, reply_markup=keyboard)
+        return
 
-        # حفظ التفضيل
-        USER_PREFS[user_id] = {
-            "country_code": country_code,
-            "city_key": city_key,
-        }
-
-        msg += "\n🔁 لاختيار مدينة أخرى أرسل: تغيير المدينة"
-
-        query.edit_message_text(msg)
-
-    elif data == "manual_location":
-        # يختار دولة/مدينة غير موجودة
-        context.user_data["awaiting_manual_location"] = True
-        query.edit_message_text(
-            "حسناً 👌\n"
-            "أرسل لي اسم الدولة والمدينة بهذا الشكل:\n"
-            "مثال: `Lebanon - Tripoli`\n"
-            "أو: `Saudi Arabia - Riyadh`\n"
-            "ويفضّل أن تكون بالأحرف الإنجليزية.\n",
+    # تحية أو أي نص ترحيبي
+    if "سلام" in text or "السلام" in text or "/start" in text or "hi" in text or "hello" in text:
+        send_country_menu(update, context)
+    else:
+        update.message.reply_text(
+            "👋 أهلًا بك.\n"
+            "اكتب *السلام عليكم* أو أرسل الأمر /start لاختيار الدولة والمدينة لمواقيت الصلاة.",
             parse_mode="Markdown",
         )
 
-    elif data.startswith("manual_city|"):
-        # مدينة غير موجودة لكن الدولة معروفة
-        country_code = data.split("|", 1)[1]
-        country = COUNTRIES.get(country_code)
-        context.user_data["awaiting_manual_location"] = True
-        context.user_data["manual_country_fixed"] = country_code
 
+def callback_handler(update: Update, context: CallbackContext):
+    query = update.callback_query
+    data = query.data
+
+    # اختيار دولة
+    if data.startswith("country|"):
+        _, country_ar = data.split("|", 1)
+        context.user_data["selected_country"] = country_ar
+
+        cities_keyboard = build_cities_keyboard(country_ar)
+        query.answer()
         query.edit_message_text(
-            f"اكتب اسم المدينة داخل {country['name_ar']} (بالإنجليزية لو أمكن)، "
-            "مثال: Riyadh\n"
-            "وسأحاول جلب المواقيت لها.",
+            f"🌍 الدولة المختارة: *{country_ar}*\n\n"
+            f"✅ اختر مدينتك من القائمة:",
+            reply_markup=cities_keyboard,
+            parse_mode="Markdown",
         )
+        return
 
-    elif data == "back_to_countries":
-        keyboard = build_countries_keyboard()
-        query.edit_message_text(
-            "اختر الدولة من جديد:", reply_markup=keyboard
-        )
-
-
-def handle_manual_location(update: Update, context: CallbackContext):
-    """استقبال إدخال يدوي للدولة والمدينة."""
-    text = (update.message.text or "").strip()
-    user_id = update.effective_user.id
-
-    fixed_country_code = context.user_data.get("manual_country_fixed")
-    if fixed_country_code:
-        # الدولة ثابتة، المستخدم يرسل فقط اسم المدينة
-        country = COUNTRIES.get(fixed_country_code)
-        api_country = country["api_country"]
-        country_ar = country["name_ar"]
-        city_input = text
-    else:
-        # نتوقع: COUNTRY - CITY
-        if "-" in text:
-            parts = text.split("-", 1)
-        elif "—" in text:
-            parts = text.split("—", 1)
-        else:
-            update.message.reply_text(
-                "الرجاء إرسال الدولة والمدينة بهذا الشكل:\n"
-                "`Saudi Arabia - Riyadh`",
+    # اختيار مدينة
+    if data.startswith("city|"):
+        _, country_ar, city_ar = data.split("|", 2)
+        if city_ar == "غير ذلك":
+            # طلب إدخال مدينة يدويًا
+            context.user_data["awaiting_city_name"] = {"country": country_ar}
+            query.answer()
+            query.edit_message_text(
+                f"✏️ اكتب الآن اسم المدينة داخل *{country_ar}* (يمكن أن تكتبها بالعربية أو الإنجليزية):",
                 parse_mode="Markdown",
             )
             return
 
-        api_country = parts[0].strip()
-        city_input = parts[1].strip()
-        country_ar = api_country  # ما عندنا ترجمة عربية هنا
+        # مدينة موجودة في القائمة
+        times = get_prayer_times(country_ar, city_ar)
+        if not times:
+            query.answer()
+            query.edit_message_text(
+                "❌ لم أستطع العثور على مواقيت الصلاة لهذه المدينة.\n"
+                "حاول اختيار (غير ذلك) وكتابة اسم المدينة يدويًا."
+            )
+            return
 
-    timings_data = fetch_prayer_times(city_input, api_country)
-    if not timings_data:
-        update.message.reply_text(
-            "لم أستطع العثور على مواقيت لهذه المدينة، تأكد من الكتابة بالأحرف الإنجليزية "
-            "أو جرّب مدينة أخرى."
+        # حفظ آخر مدينة للمستخدم
+        context.user_data["saved_country"] = country_ar
+        context.user_data["saved_city"] = city_ar
+
+        msg = format_prayer_message(country_ar, city_ar, times)
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔁 مواقيت اليوم من جديد", callback_data="repeat_last")],
+                [InlineKeyboardButton("🌍 تغيير الدولة", callback_data="change_country")],
+            ]
+        )
+        query.answer()
+        query.edit_message_markdown(msg, reply_markup=keyboard)
+        return
+
+    # إعادة آخر مواقيت محفوظة
+    if data == "repeat_last":
+        country_ar = context.user_data.get("saved_country")
+        city_ar = context.user_data.get("saved_city")
+
+        if not country_ar or not city_ar:
+            query.answer()
+            query.edit_message_text(
+                "⚠️ لا توجد مدينة محفوظة لك بعد.\n"
+                "ابدأ باختيار الدولة والمدينة من جديد عن طريق /start."
+            )
+            return
+
+        times = get_prayer_times(country_ar, city_ar)
+        if not times:
+            query.answer()
+            query.edit_message_text(
+                "❌ حدث خطأ أثناء جلب مواقيت الصلاة.\n"
+                "حاول مرة أخرى لاحقًا."
+            )
+            return
+
+        msg = format_prayer_message(country_ar, city_ar, times)
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔁 مواقيت اليوم من جديد", callback_data="repeat_last")],
+                [InlineKeyboardButton("🌍 تغيير الدولة", callback_data="change_country")],
+            ]
+        )
+        query.answer()
+        query.edit_message_markdown(msg, reply_markup=keyboard)
+        return
+
+    # تغيير الدولة
+    if data == "change_country":
+        context.user_data.pop("selected_country", None)
+        context.user_data.pop("saved_country", None)
+        context.user_data.pop("saved_city", None)
+
+        query.answer()
+        query.edit_message_text(
+            "اختر الدولة من جديد 🌍:",
+            reply_markup=build_countries_keyboard(),
         )
         return
 
-    timings, date_str = timings_data
-    msg = format_prayer_message(city_input, country_ar, timings, date_str)
-    msg += "\n\n🔁 لاختيار مدينة أخرى أرسل: تغيير المدينة"
-    update.message.reply_text(msg)
 
-    # حفظ تفضيل بسيط (لن يكون مرتبطاً بواحدة من الدول المعرفة لدينا)
-    USER_PREFS[user_id] = {
-        "country_code": fixed_country_code or "",
-        "city_key": "",
-        "manual_city": city_input,
-        "manual_country": api_country,
-    }
-
-    # مسح حالة الإدخال اليدوي
-    context.user_data["awaiting_manual_location"] = False
-    context.user_data.pop("manual_country_fixed", None)
-
-
-# ============ تشغيل البوت بالـ Webhook ============
-
+# ---------------- Main ----------------
 def main():
+    logger.info("Starting bot with webhook mode...")
+
     updater = Updater(TELEGRAM_TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # Handlers
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CallbackQueryHandler(handle_callback))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
+    # أوامر و هاندلرز
+    dp.add_handler(CommandHandler("start", start_command))
+    dp.add_handler(CallbackQueryHandler(callback_handler))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, text_handler))
 
-    # إعداد الـ webhook
-    port = int(os.environ.get("PORT", 8443))
-    base_url = os.environ.get("BASE_URL", DEFAULT_BASE_URL)
-
-    logger.info("Starting webhook on port %s", port)
+    # تشغيل Webhook على Render
+    logger.info(f"Using BASE_URL={BASE_URL}, PORT={PORT}")
+    logger.info(f"Setting webhook to {WEBHOOK_URL}")
 
     updater.start_webhook(
         listen="0.0.0.0",
-        port=port,
-        url_path=TELEGRAM_TOKEN,
+        port=PORT,                # البورت الداخلي من Render
+        url_path=WEBHOOK_PATH,    # مسار الويبهوك (التوكن)
+        webhook_url=WEBHOOK_URL,  # URL الخارجي بدون بورت
     )
-
-    webhook_url = f"{base_url}/{TELEGRAM_TOKEN}"
-    bot: Bot = updater.bot
-    bot.set_webhook(webhook_url)
-
-    logger.info("Webhook set to %s", webhook_url)
 
     updater.idle()
 
