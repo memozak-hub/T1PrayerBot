@@ -65,7 +65,21 @@ def get_prayer_times(city, country=""):
 
 def handle_message(update, context):
     chat_id = update.effective_chat.id
-    text = update.message.text.strip()
+    text = update.message.text.strip().lower()
+
+# كلمات تحية لا تعتبر مدن
+ignore_words = [
+    "السلام عليكم", "مرحبا", "اهلا", "أهلا", "hello", "hi"
+]
+
+for word in ignore_words:
+    if word in text:
+        context.bot.send_message(
+            chat_id=chat_id,
+            text="👋 مرحبًا بك\nمن فضلك اكتب اسم مدينتك مثال:\nCairo, Egypt أو Doha, Qatar"
+        )
+        return
+
 
     if chat_id not in user_locations:
 
@@ -114,4 +128,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
