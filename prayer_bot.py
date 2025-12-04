@@ -103,7 +103,7 @@ def handle(update, context):
         start(update, context)
         return
 
-    # إدخال المدينة
+    # إدخال المدينة لأول مرة
     if chat not in users:
         city = text
         country = ""
@@ -111,20 +111,19 @@ def handle(update, context):
         if "," in text:
             p = [x.strip() for x in text.split(",", 1)]
             city = p[0]
-            country = p[1]
+            if len(p) > 1:
+                country = p[1]
 
         t = get_prayer(city, country)
         if not t:
             context.bot.send_message(
                 chat_id=chat,
-                text="❌ اسم المدينة غير واضح.\n"
-                     "اكتب هكذا: Tripoli, Lebanon",
+                text="❌ اسم المدينة غير واضح.\nاكتب هكذا: Tripoli, Lebanon",
                 reply_markup=keyboard()
             )
             return
 
         users[chat] = {"city": city, "country": country}
-
         context.bot.send_message(
             chat_id=chat,
             text=format_prayer(city, country, t),
@@ -132,7 +131,7 @@ def handle(update, context):
         )
         return
 
-    # إرسال المواقيت لاحقًا
+    # لاحقًا: أي رسالة → مواقيت المدينة المحفوظة
     loc = users[chat]
     t = get_prayer(loc["city"], loc["country"])
     context.bot.send_message(
