@@ -2,6 +2,8 @@ import os
 import requests
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 from telegram import ReplyKeyboardMarkup
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
 TOKEN = os.getenv("TELEGRAM_TOKEN", "PUT_LOCAL_TOKEN_HERE")
 
@@ -141,7 +143,25 @@ def handle(update, context):
     )
 
 # --------------------
+# سيرفر HTTP بسيط علشان Render
+# --------------------
+def run_http_server():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Bot is running")
+
+    port = int(os.environ.get("PORT", "8000"))
+    server = HTTPServer(("", port), Handler)
+    server.serve_forever()
+
+# --------------------
 def main():
+    # تشغيل سيرفر HTTP في ثريد منفصل
+    threading.Thread(target=run_http_server, daemon=True).start()
+
+    # تشغيل بوت تليجرام
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
