@@ -2,11 +2,16 @@ import os
 import logging
 from typing import Optional, Dict, Tuple
 
+from datetime import datetime
 import requests
+import pytz
+
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 from telegram.ext import (
     Updater,
@@ -17,22 +22,22 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
-# ---------------- إعداد اللوج ----------------
+# ================= إعداد اللوج =================
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# ---------------- المتغيرات من Environment ----------------
+# ================= متغيرات البيئة =================
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 BASE_URL = os.environ.get("BASE_URL", "https://t1prayerbot.onrender.com").rstrip("/")
-PORT = int(os.environ.get("PORT", "10000"))  # Render يمرّر هذا تلقائيًا
+PORT = int(os.environ.get("PORT", "10000"))
 
 WEBHOOK_PATH = TELEGRAM_TOKEN
-WEBHOOK_URL = f"{BASE_URL}/{WEBHOOK_PATH}"  # مهم: بدون :PORT في الرابط
+WEBHOOK_URL = f"{BASE_URL}/{WEBHOOK_PATH}"  # بدون رقم بورت في الرابط
 
-# ---------------- البيانات: الدول والمدن ----------------
+# ================= الدول / المدن =================
 ARAB_COUNTRIES = [
     "لبنان",
     "سوريا",
@@ -53,7 +58,6 @@ ARAB_COUNTRIES = [
     "الجزائر",
 ]
 
-# مدن رئيسية لكل دولة
 COUNTRY_CITIES = {
     "لبنان": ["بيروت", "طرابلس", "صيدا", "صور", "غير ذلك"],
     "سوريا": ["دمشق", "حلب", "حمص", "حماة", "غير ذلك"],
@@ -74,7 +78,6 @@ COUNTRY_CITIES = {
     "الجزائر": ["الجزائر", "وهران", "قسنطينة", "عنابة", "غير ذلك"],
 }
 
-# أسماء الدول الإنجليزية لـ API
 COUNTRY_API_NAMES = {
     "لبنان": "Lebanon",
     "سوريا": "Syria",
@@ -95,7 +98,6 @@ COUNTRY_API_NAMES = {
     "الجزائر": "Algeria",
 }
 
-# أسماء المدن الإنجليزية لبعض المدن المعروفة
 CITY_API_NAMES: Dict[Tuple[str, str], str] = {
     ("لبنان", "بيروت"): "Beirut",
     ("لبنان", "طرابلس"): "Tripoli",
@@ -163,8 +165,22 @@ CITY_API_NAMES: Dict[Tuple[str, str], str] = {
     ("الجزائر", "عنابة"): "Annaba",
 }
 
+# ================ كيبورد الكوماند الأساسية ================
+def main_reply_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [
+            KeyboardButton("مواقيت اليوم 🕌"),
+            KeyboardButton("تغيير المدينة 🧭"),
+        ],
+        [
+            KeyboardButton("إرسال موقعي 📍", request_location=True),
+            KeyboardButton("تنبيهات الأذان 🔔"),
+        ],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ---------------- دوال مساعدة لبناء الكيبورد ----------------
+
+# ================ كيبورد الدول / المدن (Inline) ================
 def build_countries_keyboard() -> InlineKeyboardMarkup:
     buttons = []
     row = []
@@ -186,7 +202,7 @@ def build_cities_keyboard(country: str) -> InlineKeyboardMarkup:
         row.append(
             InlineKeyboardButton(
                 city,
-                callback_data=f"city|{country}|{city}"
+                callback_data=f"city|{country}|{city}",
             )
         )
         if i % 2 == 0:
@@ -197,8 +213,9 @@ def build_cities_keyboard(country: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-# ---------------- دالة جلب مواقيت الصلاة من API ----------------
+# ================ استدعاء API ================
 def get_prayer_times(country_ar: str, city_ar: str) -> Optional[Dict]:
+    """عن طريق الدولة / المدينة."""
     country_en = COUNTRY_API_NAMES.get(country_ar, country_ar)
     city_en = CITY_API_NAMES.get((country_ar, city_ar), city_ar)
 
@@ -213,7 +230,6 @@ def get_prayer_times(country_ar: str, city_ar: str) -> Optional[Dict]:
         resp = requests.get(url, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-
         if data.get("code") != 200:
             logger.warning(f"API error: {data}")
             return None
@@ -222,6 +238,7 @@ def get_prayer_times(country_ar: str, city_ar: str) -> Optional[Dict]:
         date_info = data["data"]["date"]
         gregorian = date_info["readable"]
         hijri = date_info["hijri"]["date"]
+        timezone = data["data"]["meta"]["timezone"]
 
         return {
             "Fajr": timings.get("Fajr"),
@@ -231,12 +248,60 @@ def get_prayer_times(country_ar: str, city_ar: str) -> Optional[Dict]:
             "Isha": timings.get("Isha"),
             "gregorian": gregorian,
             "hijri": hijri,
+            "timezone": timezone,
+            "country_ar": country_ar,
+            "city_ar": city_ar,
         }
     except Exception as e:
-        logger.exception(f"Error fetching prayer times: {e}")
+        logger.exception(f"Error fetching prayer times by city: {e}")
         return None
 
 
+def get_prayer_times_by_coords(lat: float, lon: float) -> Optional[Dict]:
+    """عن طريق الإحداثيات (GPS)."""
+    try:
+        url = "http://api.aladhan.com/v1/timings"
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "method": 2,
+            "school": 0,
+        }
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 200:
+            logger.warning(f"API error: {data}")
+            return None
+
+        timings = data["data"]["timings"]
+        date_info = data["data"]["date"]
+        gregorian = date_info["readable"]
+        hijri = date_info["hijri"]["date"]
+        timezone = data["data"]["meta"]["timezone"]
+
+        # لا نعرف المدينة بالضبط، فنكتب وصف عام
+        country_ar = "حسب موقعك"
+        city_ar = "موقعك الحالي"
+
+        return {
+            "Fajr": timings.get("Fajr"),
+            "Dhuhr": timings.get("Dhuhr"),
+            "Asr": timings.get("Asr"),
+            "Maghrib": timings.get("Maghrib"),
+            "Isha": timings.get("Isha"),
+            "gregorian": gregorian,
+            "hijri": hijri,
+            "timezone": timezone,
+            "country_ar": country_ar,
+            "city_ar": city_ar,
+        }
+    except Exception as e:
+        logger.exception(f"Error fetching prayer times by coords: {e}")
+        return None
+
+
+# ================ تنسيق الرسالة ================
 def format_prayer_message(country_ar: str, city_ar: str, times: Dict) -> str:
     return (
         f"🕌 *مواقيت الصلاة اليوم*\n"
@@ -253,12 +318,94 @@ def format_prayer_message(country_ar: str, city_ar: str, times: Dict) -> str:
     )
 
 
-# ---------------- Handlers ----------------
+# ================ تنبيهات الأذان (JobQueue) ================
+def cancel_alert_jobs(context: CallbackContext, chat_id: int):
+    for job in context.job_queue.jobs():
+        if str(job.name).startswith(f"alert-{chat_id}-"):
+            job.schedule_removal()
+
+
+def send_adhan_alert(context: CallbackContext):
+    job = context.job
+    data = job.context or {}
+    chat_id = data.get("chat_id")
+    prayer_name = data.get("prayer_name_ar", "أحد الأوقات")
+    if not chat_id:
+        return
+    context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🕌 حان الآن وقت صلاة *{prayer_name}*.\n\nتقبّل الله طاعتكم 🤍",
+        parse_mode="Markdown",
+    )
+
+
+def schedule_prayer_alerts(context: CallbackContext, chat_id: int, user_data: Dict) -> bool:
+    """تفعيل التنبيهات لباقي أوقات اليوم فقط."""
+    # نحدد المصدر: إحداثيات أو مدينة
+    times = None
+    if user_data.get("saved_lat") is not None and user_data.get("saved_lon") is not None:
+        times = get_prayer_times_by_coords(user_data["saved_lat"], user_data["saved_lon"])
+    elif user_data.get("saved_country") and user_data.get("saved_city"):
+        times = get_prayer_times(user_data["saved_country"], user_data["saved_city"])
+
+    if not times:
+        return False
+
+    tz = pytz.timezone(times["timezone"])
+    now_local = datetime.now(tz)
+    today = now_local.date()
+
+    # حذف أي تنبيهات قديمة
+    cancel_alert_jobs(context, chat_id)
+
+    prayers = [
+        ("الفجر", "Fajr"),
+        ("الظهر", "Dhuhr"),
+        ("العصر", "Asr"),
+        ("المغرب", "Maghrib"),
+        ("العشاء", "Isha"),
+    ]
+
+    scheduled_any = False
+
+    for label_ar, key in prayers:
+        t_str = times.get(key)
+        if not t_str:
+            continue
+        try:
+            hour, minute = map(int, t_str.split(":")[:2])
+        except Exception:
+            continue
+
+        prayer_dt_local = tz.localize(datetime(today.year, today.month, today.day, hour, minute))
+        if prayer_dt_local <= now_local:
+            # هذا الوقت مرّ
+            continue
+
+        run_time_utc = prayer_dt_local.astimezone(pytz.UTC)
+
+        context.job_queue.run_once(
+            send_adhan_alert,
+            when=run_time_utc,
+            context={
+                "chat_id": chat_id,
+                "prayer_name_ar": label_ar,
+            },
+            name=f"alert-{chat_id}-{key}",
+        )
+
+        scheduled_any = True
+
+    return scheduled_any
+
+
+# ================ Handlers ================
 def send_country_menu(update: Update, context: CallbackContext):
     text = (
-        "وعليكم السلام ورحمة الله وبركاته 🤍\n\n"
-        "اختَر الدولة أولًا من القائمة التالية، ثم اختر مدينتك للحصول على مواقيت الصلاة."
+        "اختَر الدولة أولًا من القائمة التالية، ثم اختر مدينتك للحصول على مواقيت الصلاة.\n\n"
+        "بعد اختيار المدينة سيتم تثبيتها تلقائيًا لك."
     )
+
     if update.message:
         update.message.reply_text(
             text,
@@ -274,57 +421,176 @@ def send_country_menu(update: Update, context: CallbackContext):
 
 
 def start_command(update: Update, context: CallbackContext):
-    send_country_menu(update, context)
+    welcome = (
+        "👋 أهلًا بك.\n\n"
+        "اكتب *السلام عليكم* أو استخدم الأزرار بالأسفل:\n"
+        "• مواقيت اليوم 🕌\n"
+        "• تغيير المدينة 🧭\n"
+        "• إرسال موقعي 📍\n"
+        "• تنبيهات الأذان 🔔"
+    )
+    update.message.reply_text(
+        welcome,
+        reply_markup=main_reply_keyboard(),
+        parse_mode="Markdown",
+    )
 
 
 def text_handler(update: Update, context: CallbackContext):
-    text = (update.message.text or "").strip().lower()
+    text = (update.message.text or "").strip()
+
+    # تحية = نفس /start
+    lowered = text.lower()
+    if (
+        "السلام" in lowered
+        or "سلام" in lowered
+        or "/start" in lowered
+        or lowered in ("hi", "hello")
+    ):
+        start_command(update, context)
+        return
+
+    user_data = context.user_data
+    chat_id = update.message.chat_id
 
     # لو كان ينتظر اسم مدينة غير موجودة في القائمة
-    if context.user_data.get("awaiting_city_name"):
-        data = context.user_data["awaiting_city_name"]
-        country_ar = data["country"]
-        city_ar = update.message.text.strip()
+    if user_data.get("awaiting_city_name"):
+        country_ar = user_data["awaiting_city_name"]["country"]
+        city_ar = text.strip()
 
         times = get_prayer_times(country_ar, city_ar)
         if not times:
             update.message.reply_text(
                 "❌ لم أستطع العثور على مواقيت الصلاة لهذه المدينة.\n"
-                "حاول كتابة الاسم بالإنجليزية أو باسم مختلف، أو اختر مدينة من القائمة."
+                "حاول كتابة الاسم بطريقة أخرى أو اختر مدينة من القائمة."
             )
             return
 
-        context.user_data["saved_country"] = country_ar
-        context.user_data["saved_city"] = city_ar
-        context.user_data["awaiting_city_name"] = None
+        user_data["saved_country"] = country_ar
+        user_data["saved_city"] = city_ar
+        user_data["saved_lat"] = None
+        user_data["saved_lon"] = None
+        user_data["awaiting_city_name"] = None
 
         msg = format_prayer_message(country_ar, city_ar, times)
         keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🔁 مواقيت اليوم من جديد", callback_data="repeat_last")]]
+            [
+                [InlineKeyboardButton("🔁 مواقيت اليوم من جديد", callback_data="repeat_last")],
+                [InlineKeyboardButton("🌍 تغيير الدولة", callback_data="change_country")],
+            ]
         )
         update.message.reply_markdown(msg, reply_markup=keyboard)
         return
 
-    # تحية أو نص ترحيبي
-    if "سلام" in text or "السلام" in text or "/start" in text or "hi" in text or "hello" in text:
-        send_country_menu(update, context)
-    else:
-        update.message.reply_text(
-            "👋 أهلًا بك.\n"
-            "اكتب *السلام عليكم* أو أرسل الأمر /start لاختيار الدولة والمدينة لمواقيت الصلاة.",
-            parse_mode="Markdown",
+    # زر مواقيت اليوم
+    if "مواقيت" in text:
+        # عنده موقع محفوظ؟
+        times = None
+        if user_data.get("saved_lat") is not None and user_data.get("saved_lon") is not None:
+            times = get_prayer_times_by_coords(user_data["saved_lat"], user_data["saved_lon"])
+        elif user_data.get("saved_country") and user_data.get("saved_city"):
+            times = get_prayer_times(user_data["saved_country"], user_data["saved_city"])
+
+        if not times:
+            # لم يتم تعيين مدينة بعد
+            send_country_menu(update, context)
+            return
+
+        msg = format_prayer_message(times["country_ar"], times["city_ar"], times)
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔁 مواقيت اليوم من جديد", callback_data="repeat_last")],
+                [InlineKeyboardButton("🌍 تغيير الدولة", callback_data="change_country")],
+            ]
         )
+        update.message.reply_markdown(msg, reply_markup=keyboard)
+        return
+
+    # زر تغيير المدينة
+    if "تغيير المدينة" in text:
+        # مسح المكان المحفوظ
+        user_data.pop("saved_country", None)
+        user_data.pop("saved_city", None)
+        user_data.pop("saved_lat", None)
+        user_data.pop("saved_lon", None)
+        send_country_menu(update, context)
+        return
+
+    # زر تنبيهات الأذان
+    if "تنبيهات" in text:
+        if not (
+            user_data.get("saved_lat") is not None and user_data.get("saved_lon") is not None
+        ) and not (user_data.get("saved_country") and user_data.get("saved_city")):
+            update.message.reply_text(
+                "⚠️ من فضلك حدِّد مدينتك أو أرسل موقعك أولًا، ثم فعِّل تنبيهات الأذان."
+            )
+            return
+
+        alerts_on = user_data.get("alerts_on", False)
+        if alerts_on:
+            user_data["alerts_on"] = False
+            cancel_alert_jobs(context, chat_id)
+            update.message.reply_text("🔕 تم إيقاف تنبيهات الأذان لليوم.")
+        else:
+            ok = schedule_prayer_alerts(context, chat_id, user_data)
+            if ok:
+                user_data["alerts_on"] = True
+                update.message.reply_text(
+                    "🔔 تم تفعيل تنبيهات الأذان لباقي أوقات *اليوم الحالي*.\n"
+                    "غدًا يمكنك الضغط على الزر مرة أخرى لتجديد التنبيهات.",
+                    parse_mode="Markdown",
+                )
+            else:
+                update.message.reply_text(
+                    "❌ لم أستطع جدولة التنبيهات. حاول لاحقًا أو غيّر المدينة."
+                )
+        return
+
+    # أي نص آخر
+    update.message.reply_text(
+        "👋 استخدم الأزرار بالأسفل للحصول على مواقيت الصلاة أو تغيير المدينة.",
+        reply_markup=main_reply_keyboard(),
+    )
+
+
+def location_handler(update: Update, context: CallbackContext):
+    """عند إرسال الموقع من زر (إرسال موقعي 📍)."""
+    loc = update.message.location
+    lat, lon = loc.latitude, loc.longitude
+
+    user_data = context.user_data
+    user_data["saved_lat"] = lat
+    user_data["saved_lon"] = lon
+    user_data["saved_country"] = None
+    user_data["saved_city"] = None
+
+    times = get_prayer_times_by_coords(lat, lon)
+    if not times:
+        update.message.reply_text(
+            "❌ حدث خطأ أثناء جلب مواقيت الصلاة حسب موقعك.\nحاول مرة أخرى لاحقًا."
+        )
+        return
+
+    msg = format_prayer_message(times["country_ar"], times["city_ar"], times)
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔁 مواقيت اليوم من جديد", callback_data="repeat_last")],
+            [InlineKeyboardButton("🌍 اختيار دولة/مدينة يدويًا", callback_data="change_country")],
+        ]
+    )
+    update.message.reply_markdown(msg, reply_markup=keyboard)
 
 
 def callback_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     data = query.data
     chat_id = query.message.chat.id
+    user_data = context.user_data
 
     # اختيار دولة
     if data.startswith("country|"):
         _, country_ar = data.split("|", 1)
-        context.user_data["selected_country"] = country_ar
+        user_data["selected_country"] = country_ar
 
         cities_keyboard = build_cities_keyboard(country_ar)
         query.answer()
@@ -340,10 +606,10 @@ def callback_handler(update: Update, context: CallbackContext):
     if data.startswith("city|"):
         _, country_ar, city_ar = data.split("|", 2)
         if city_ar == "غير ذلك":
-            context.user_data["awaiting_city_name"] = {"country": country_ar}
+            user_data["awaiting_city_name"] = {"country": country_ar}
             query.answer()
             query.edit_message_text(
-                f"✏️ اكتب الآن اسم المدينة داخل *{country_ar}* (يمكن أن تكتبها بالعربية أو الإنجليزية):",
+                f"✏️ اكتب الآن اسم المدينة داخل *{country_ar}*:",
                 parse_mode="Markdown",
             )
             return
@@ -354,12 +620,15 @@ def callback_handler(update: Update, context: CallbackContext):
             context.bot.send_message(
                 chat_id=chat_id,
                 text="❌ لم أستطع العثور على مواقيت الصلاة لهذه المدينة.\n"
-                     "حاول اختيار (غير ذلك) وكتابة اسم المدينة يدويًا."
+                     "اختر (غير ذلك) وادخل الاسم يدويًا."
             )
             return
 
-        context.user_data["saved_country"] = country_ar
-        context.user_data["saved_city"] = city_ar
+        # حفظ المدينة
+        user_data["saved_country"] = country_ar
+        user_data["saved_city"] = city_ar
+        user_data["saved_lat"] = None
+        user_data["saved_lon"] = None
 
         msg = format_prayer_message(country_ar, city_ar, times)
         keyboard = InlineKeyboardMarkup(
@@ -377,30 +646,24 @@ def callback_handler(update: Update, context: CallbackContext):
         )
         return
 
-    # إعادة آخر مواقيت محفوظة
+    # إعادة آخر مدينة/موقع
     if data == "repeat_last":
-        country_ar = context.user_data.get("saved_country")
-        city_ar = context.user_data.get("saved_city")
+        times = None
+        if user_data.get("saved_lat") is not None and user_data.get("saved_lon") is not None:
+            times = get_prayer_times_by_coords(user_data["saved_lat"], user_data["saved_lon"])
+        elif user_data.get("saved_country") and user_data.get("saved_city"):
+            times = get_prayer_times(user_data["saved_country"], user_data["saved_city"])
 
-        if not country_ar or not city_ar:
-            query.answer()
-            context.bot.send_message(
-                chat_id=chat_id,
-                text="⚠️ لا توجد مدينة محفوظة لك بعد.\n"
-                     "ابدأ باختيار الدولة والمدينة من جديد عن طريق /start."
-            )
-            return
-
-        times = get_prayer_times(country_ar, city_ar)
         if not times:
             query.answer()
             context.bot.send_message(
                 chat_id=chat_id,
-                text="❌ حدث خطأ أثناء جلب مواقيت الصلاة.\nحاول مرة أخرى لاحقًا."
+                text="⚠️ لا توجد مدينة أو موقع محفوظ.\n"
+                     "استخدم زر (مواقيت اليوم 🕌) لتحديد المدينة أولًا."
             )
             return
 
-        msg = format_prayer_message(country_ar, city_ar, times)
+        msg = format_prayer_message(times["country_ar"], times["city_ar"], times)
         keyboard = InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton("🔁 مواقيت اليوم من جديد", callback_data="repeat_last")],
@@ -416,11 +679,13 @@ def callback_handler(update: Update, context: CallbackContext):
         )
         return
 
-    # تغيير الدولة
+    # تغيير الدولة من جديد
     if data == "change_country":
-        context.user_data.pop("selected_country", None)
-        context.user_data.pop("saved_country", None)
-        context.user_data.pop("saved_city", None)
+        user_data.pop("saved_country", None)
+        user_data.pop("saved_city", None)
+        user_data.pop("saved_lat", None)
+        user_data.pop("saved_lon", None)
+        user_data.pop("selected_country", None)
 
         query.answer()
         query.edit_message_text(
@@ -430,7 +695,7 @@ def callback_handler(update: Update, context: CallbackContext):
         return
 
 
-# ---------------- Main ----------------
+# ================ Main =================
 def main():
     logger.info("Starting bot with webhook mode...")
 
@@ -439,6 +704,7 @@ def main():
 
     dp.add_handler(CommandHandler("start", start_command))
     dp.add_handler(CallbackQueryHandler(callback_handler))
+    dp.add_handler(MessageHandler(Filters.location, location_handler))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, text_handler))
 
     logger.info(f"Using BASE_URL={BASE_URL}, PORT={PORT}")
