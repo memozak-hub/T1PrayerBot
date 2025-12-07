@@ -53,7 +53,7 @@ ARAB_COUNTRIES = [
     "الجزائر",
 ]
 
-# مدن رئيسية لكل دولة (يمكنك إضافة/تعديل كما تحب)
+# مدن رئيسية لكل دولة
 COUNTRY_CITIES = {
     "لبنان": ["بيروت", "طرابلس", "صيدا", "صور", "غير ذلك"],
     "سوريا": ["دمشق", "حلب", "حمص", "حماة", "غير ذلك"],
@@ -62,9 +62,9 @@ COUNTRY_CITIES = {
     "مصر": ["القاهرة", "الإسكندرية", "الجيزة", "أسيوط", "غير ذلك"],
     "السعودية": ["الرياض", "مكة", "المدينة", "جدة", "غير ذلك"],
     "الإمارات": ["دبي", "أبوظبي", "الشارقة", "عجمان", "غير ذلك"],
-    "قطر": ["الدوحة", "الريان", "الوكرة", "الخوير", "غير ذلك"],
+    "قطر": ["الدوحة", "الريان", "الوكرة", "غير ذلك"],
     "الكويت": ["مدينة الكويت", "حولي", "الفروانية", "الجهراء", "غير ذلك"],
-    "البحرين": ["المنامة", "المحرق", "سترة", "عيسى", "غير ذلك"],
+    "البحرين": ["المنامة", "المحرق", "سترة", "غير ذلك"],
     "عُمان": ["مسقط", "صلالة", "نزوى", "صحار", "غير ذلك"],
     "العراق": ["بغداد", "البصرة", "أربيل", "الموصل", "غير ذلك"],
     "اليمن": ["صنعاء", "عدن", "تعز", "الحديدة", "غير ذلك"],
@@ -170,7 +170,7 @@ def build_countries_keyboard() -> InlineKeyboardMarkup:
     row = []
     for i, country in enumerate(ARAB_COUNTRIES, start=1):
         row.append(InlineKeyboardButton(country, callback_data=f"country|{country}"))
-        if i % 2 == 0:  # صفين صفين
+        if i % 2 == 0:
             buttons.append(row)
             row = []
     if row:
@@ -199,7 +199,6 @@ def build_cities_keyboard(country: str) -> InlineKeyboardMarkup:
 
 # ---------------- دالة جلب مواقيت الصلاة من API ----------------
 def get_prayer_times(country_ar: str, city_ar: str) -> Optional[Dict]:
-    """يرجع dict فيه المواقيت أو None في حال الفشل."""
     country_en = COUNTRY_API_NAMES.get(country_ar, country_ar)
     city_en = CITY_API_NAMES.get((country_ar, city_ar), city_ar)
 
@@ -208,7 +207,7 @@ def get_prayer_times(country_ar: str, city_ar: str) -> Optional[Dict]:
         params = {
             "city": city_en,
             "country": country_en,
-            "method": 2,   # جامعة العلوم الإسلامية بكراتشي
+            "method": 2,
             "school": 0,
         }
         resp = requests.get(url, params=params, timeout=10)
@@ -266,7 +265,6 @@ def send_country_menu(update: Update, context: CallbackContext):
             reply_markup=build_countries_keyboard(),
         )
     else:
-        # لو نداء من كولباك
         query = update.callback_query
         query.answer()
         query.edit_message_text(
@@ -296,7 +294,6 @@ def text_handler(update: Update, context: CallbackContext):
             )
             return
 
-        # حفظ آخر مدينة للمستخدم
         context.user_data["saved_country"] = country_ar
         context.user_data["saved_city"] = city_ar
         context.user_data["awaiting_city_name"] = None
@@ -308,7 +305,7 @@ def text_handler(update: Update, context: CallbackContext):
         update.message.reply_markdown(msg, reply_markup=keyboard)
         return
 
-    # تحية أو أي نص ترحيبي
+    # تحية أو نص ترحيبي
     if "سلام" in text or "السلام" in text or "/start" in text or "hi" in text or "hello" in text:
         send_country_menu(update, context)
     else:
@@ -322,6 +319,7 @@ def text_handler(update: Update, context: CallbackContext):
 def callback_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     data = query.data
+    chat_id = query.message.chat.id
 
     # اختيار دولة
     if data.startswith("country|"):
@@ -342,7 +340,6 @@ def callback_handler(update: Update, context: CallbackContext):
     if data.startswith("city|"):
         _, country_ar, city_ar = data.split("|", 2)
         if city_ar == "غير ذلك":
-            # طلب إدخال مدينة يدويًا
             context.user_data["awaiting_city_name"] = {"country": country_ar}
             query.answer()
             query.edit_message_text(
@@ -351,17 +348,16 @@ def callback_handler(update: Update, context: CallbackContext):
             )
             return
 
-        # مدينة موجودة في القائمة
         times = get_prayer_times(country_ar, city_ar)
         if not times:
             query.answer()
-            query.edit_message_text(
-                "❌ لم أستطع العثور على مواقيت الصلاة لهذه المدينة.\n"
-                "حاول اختيار (غير ذلك) وكتابة اسم المدينة يدويًا."
+            context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ لم أستطع العثور على مواقيت الصلاة لهذه المدينة.\n"
+                     "حاول اختيار (غير ذلك) وكتابة اسم المدينة يدويًا."
             )
             return
 
-        # حفظ آخر مدينة للمستخدم
         context.user_data["saved_country"] = country_ar
         context.user_data["saved_city"] = city_ar
 
@@ -373,7 +369,12 @@ def callback_handler(update: Update, context: CallbackContext):
             ]
         )
         query.answer()
-        query.edit_message_markdown(msg, reply_markup=keyboard)
+        context.bot.send_message(
+            chat_id=chat_id,
+            text=msg,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
         return
 
     # إعادة آخر مواقيت محفوظة
@@ -383,18 +384,19 @@ def callback_handler(update: Update, context: CallbackContext):
 
         if not country_ar or not city_ar:
             query.answer()
-            query.edit_message_text(
-                "⚠️ لا توجد مدينة محفوظة لك بعد.\n"
-                "ابدأ باختيار الدولة والمدينة من جديد عن طريق /start."
+            context.bot.send_message(
+                chat_id=chat_id,
+                text="⚠️ لا توجد مدينة محفوظة لك بعد.\n"
+                     "ابدأ باختيار الدولة والمدينة من جديد عن طريق /start."
             )
             return
 
         times = get_prayer_times(country_ar, city_ar)
         if not times:
             query.answer()
-            query.edit_message_text(
-                "❌ حدث خطأ أثناء جلب مواقيت الصلاة.\n"
-                "حاول مرة أخرى لاحقًا."
+            context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ حدث خطأ أثناء جلب مواقيت الصلاة.\nحاول مرة أخرى لاحقًا."
             )
             return
 
@@ -406,7 +408,12 @@ def callback_handler(update: Update, context: CallbackContext):
             ]
         )
         query.answer()
-        query.edit_message_markdown(msg, reply_markup=keyboard)
+        context.bot.send_message(
+            chat_id=chat_id,
+            text=msg,
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
         return
 
     # تغيير الدولة
@@ -430,20 +437,18 @@ def main():
     updater = Updater(TELEGRAM_TOKEN, use_context=True)
     dp = updater.dispatcher
 
-    # أوامر و هاندلرز
     dp.add_handler(CommandHandler("start", start_command))
     dp.add_handler(CallbackQueryHandler(callback_handler))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, text_handler))
 
-    # تشغيل Webhook على Render
     logger.info(f"Using BASE_URL={BASE_URL}, PORT={PORT}")
     logger.info(f"Setting webhook to {WEBHOOK_URL}")
 
     updater.start_webhook(
         listen="0.0.0.0",
-        port=PORT,                # البورت الداخلي من Render
-        url_path=WEBHOOK_PATH,    # مسار الويبهوك (التوكن)
-        webhook_url=WEBHOOK_URL,  # URL الخارجي بدون بورت
+        port=PORT,
+        url_path=WEBHOOK_PATH,
+        webhook_url=WEBHOOK_URL,
     )
 
     updater.idle()
